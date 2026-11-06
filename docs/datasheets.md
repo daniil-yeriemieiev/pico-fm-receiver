@@ -1,6 +1,8 @@
-# Hardware Documentation (Datasheets)
+# Documentation & References
 
-This document contains reference materials and datasheets for the hardware components used in the Pico W FM Radio Receiver project.
+This document contains reference materials, hardware datasheets, and software guides used in the Pico W FM Radio Receiver project.
+
+## Hardware Datasheets
 
 | Component | Document Name | Direct Link |
 |---|---|---|
@@ -13,6 +15,10 @@ This document contains reference materials and datasheets for the hardware compo
 
 ---
 
-**Note regarding the SH1106 OLED Display:**
-We are utilizing the pre-written driver library provided in the university course materials for the display module. 
-Source code link: [`sh1106.py`](https://gitlab.fekt.vut.cz/fryza/micropython-course-labs/-/blob/main/examples/_modules/sh1106.py)
+## Software & Course Materials
+
+* **OLED Display Driver:** We are utilizing the pre-written driver library provided in the course repository for the SH1106 display module.
+  [Source code: `sh1106.py`](https://gitlab.fekt.vut.cz/fryza/micropython-course-labs/-/blob/main/examples/_modules/sh1106.py)
+
+* **Sphinx Documentation Guide:** A practical guide written by our instructor in the lab repository for setting up, structuring, and generating the project documentation.
+  [Guide: `HOWTO_Sphinx.md`](https://gitlab.fekt.vut.cz/fryza/micropython-course-labs/-/blob/main/docs/HOWTO_Sphinx.md)
