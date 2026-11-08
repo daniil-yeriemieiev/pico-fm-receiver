@@ -17,9 +17,28 @@ RDS_RBDS=0  # 0=RDS, 1=RBDS
 
 
 #example program for testing the si4703 library
-from time import sleep,monotonic
-from sys import stdin,stdout,argv,exit
-from shutil import get_terminal_size
+from time import sleep
+try:
+    from time import monotonic
+except ImportError:
+    from time import ticks_ms # type: ignore
+    def monotonic():
+        return ticks_ms() / 1000.0
+
+from sys import stdin,stdout,exit
+try:
+    from sys import argv
+except ImportError:
+    argv = ['']
+
+try:
+    from shutil import get_terminal_size
+except ImportError:
+    def get_terminal_size():
+        class _TermSize:
+            columns = 80
+        return _TermSize()
+
 from math import floor
 
 # RDS_ODA_AID, RDS_GTYPE_desc
@@ -81,30 +100,38 @@ def getradio():
 ###############################################
 
 ## https://ballingt.com/nonblocking-stdin-in-python-3/
-from fcntl import fcntl,F_GETFL,F_SETFL
-from os import O_NONBLOCK
-from tty import setcbreak
-from termios import tcgetattr,tcsetattr,TCSANOW
+try:
+    from fcntl import fcntl,F_GETFL,F_SETFL # type: ignore
+    from os import O_NONBLOCK # type: ignore
+    from tty import setcbreak # type: ignore
+    from termios import tcgetattr,tcsetattr,TCSANOW # type: ignore
+    _HAS_TERMIOS = True
+except ImportError:
+    _HAS_TERMIOS = False
 
 class raw(object):
     def __init__(self, stream):
         self.stream = stream
-        self.fd = self.stream.fileno()
+        self.fd = self.stream.fileno() if _HAS_TERMIOS and hasattr(self.stream, 'fileno') else None
     def __enter__(self):
-        self.original_stty = tcgetattr(self.stream)
-        setcbreak(self.stream)
+        if _HAS_TERMIOS and self.fd is not None:
+            self.original_stty = tcgetattr(self.stream)
+            setcbreak(self.stream)
     def __exit__(self, type, value, traceback):
-        tcsetattr(self.stream, TCSANOW, self.original_stty)
+        if _HAS_TERMIOS and self.fd is not None:
+            tcsetattr(self.stream, TCSANOW, self.original_stty)
 
 class nonblocking(object):
     def __init__(self, stream):
         self.stream = stream
-        self.fd = self.stream.fileno()
+        self.fd = self.stream.fileno() if _HAS_TERMIOS and hasattr(self.stream, 'fileno') else None
     def __enter__(self):
-        self.orig_fl = fcntl(self.fd, F_GETFL)
-        fcntl(self.fd, F_SETFL, self.orig_fl | O_NONBLOCK)
+        if _HAS_TERMIOS and self.fd is not None:
+            self.orig_fl = fcntl(self.fd, F_GETFL)
+            fcntl(self.fd, F_SETFL, self.orig_fl | O_NONBLOCK)
     def __exit__(self, *args):
-        fcntl(self.fd, F_SETFL, self.orig_fl)
+        if _HAS_TERMIOS and self.fd is not None:
+            fcntl(self.fd, F_SETFL, self.orig_fl)
 
 
 
@@ -1293,7 +1320,7 @@ def main(init=False,deinit=ONCRASH_OFF):
 
         # read character
         # TODO: can be spliced with HTTP or MQTT control if needed
-        cmd = stdin.read(1)
+        cmd = stdin.read(1) if _HAS_TERMIOS else ''
         if cmd=='': continue
 
         # erase current realtime-data line
@@ -1358,7 +1385,7 @@ def main(init=False,deinit=ONCRASH_OFF):
 
         # dump chip registers
         elif cmd == "r":
-            printreg()
+            printreg(radio)
             print()
         # reset/initialize chip
         elif cmd == "i":
@@ -1815,5 +1842,3 @@ if __name__ == "__main__":
 #      if argv[1]=='-s': main_scan();exit(0)
 #      if argv[1]=='-si': main_scan(init=True);exit(0)
 #    main()
-
-

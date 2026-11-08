@@ -217,7 +217,7 @@ class si4703Radio():
         self.si4703ReadRegisters()
         self.si4703_registers[self.SI4703_CHANNEL] &= 0xFE00 # Clear out the channel bits
         self.si4703_registers[self.SI4703_CHANNEL] |= newChannel; # Mask in the new channel
-#        self.si4703_registers[self.SI4703_CHANNEL] |= (1<<self.SI4703_TUNE); # Set the TUNE bit to start
+        self.si4703_registers[self.SI4703_CHANNEL] |= (1<<self.SI4703_TUNE); # Set the TUNE bit to start
         self.si4703WriteRegisters()
 #        return
 
@@ -376,8 +376,8 @@ class si4703Radio():
         for i in range(0,6):
             i2cWriteBytes[i*2], i2cWriteBytes[(i*2)+1] = divmod(self.si4703_registers[i+2], 0x100)
 
-        # the "address" of the SMBUS write command is not used on the si4703 - need to use the first byte
-        self.i2c.writeto(self.i2CAddr, bytes(i2cWriteBytes[0:11]))
+        # Send all 12 bytes (registers 0x02 through 0x07)
+        self.i2c.writeto(self.i2CAddr, bytes(i2cWriteBytes))
 
 
     def si4703ReadRegisters(self):
