@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 
 
-HARDWARE='raspi' # raspberry pi
+HARDWARE='pico' # 'raspi' for raspberry pi, 'pico' for Pico W
 #HARDWARE='none'  # no gpio reset pulse
 # later here will be USB for usb-i2c and others
 
-I2C_BUS=1      # 0 for ancient raspberry pi, 1 for newer, other for usb-i2c or other platforms
+I2C_BUS=1      # 0 or 1 on Raspberry Pi Pico W
+I2C_SDA=2      # Pico GP2 (I2C1 SDA)
+I2C_SCL=3      # Pico GP3 (I2C1 SCL)
 
-# for raspi:
-PIN_RESET=23   # BCM pin for reset, on common modules mandatory for initializing the chip to I2C
+# for raspi / pico:
+PIN_RESET = 23 if HARDWARE == 'raspi' else 16   # GPIO pin for reset, on common modules mandatory for initializing the chip to I2C
 #PIN_IRQ=24     # BCM pin for interrupt, optional
 PIN_IRQ=-1     # disable interrupt
 
@@ -21,9 +23,15 @@ from time import sleep
 try:
     from time import monotonic
 except ImportError:
-    from time import ticks_ms # type: ignore
+    from time import ticks_ms, ticks_diff # type: ignore
+    _last_ticks = ticks_ms()
+    _monotonic_ms = 0
     def monotonic():
-        return ticks_ms() / 1000.0
+        global _last_ticks, _monotonic_ms
+        now = ticks_ms()
+        _monotonic_ms += ticks_diff(now, _last_ticks)
+        _last_ticks = now
+        return _monotonic_ms / 1000.0
 
 from sys import stdin,stdout,exit
 try:
@@ -86,8 +94,8 @@ Si4703_I2C_ADDR=0x10 # 0x10 by default
 ##############
 
 def getradio():
-    if HARDWARE=='raspi': return si4703Radio(addr=Si4703_I2C_ADDR, rstpin=PIN_RESET, irqpin=PIN_IRQ, bus=I2C_BUS, hw=HARDWARE)
-    if HARDWARE=='none':  return si4703Radio(addr=Si4703_I2C_ADDR, rstpin=-1,        irqpin=-1,      bus=I2C_BUS, hw=HARDWARE)
+    if HARDWARE in ('raspi', 'pico'): return si4703Radio(addr=Si4703_I2C_ADDR, rstpin=PIN_RESET, irqpin=PIN_IRQ, bus=I2C_BUS, hw=HARDWARE, sda=I2C_SDA, scl=I2C_SCL)
+    if HARDWARE=='none':  return si4703Radio(addr=Si4703_I2C_ADDR, rstpin=-1,        irqpin=-1,      bus=I2C_BUS, hw=HARDWARE, sda=I2C_SDA, scl=I2C_SCL)
     print('ERROR: unknown hardware:',HARDWARE)
     raise(BaseException('unknown hardware definition'))
 
@@ -106,8 +114,15 @@ try:
     from tty import setcbreak # type: ignore
     from termios import tcgetattr,tcsetattr,TCSANOW # type: ignore
     _HAS_TERMIOS = True
+    _STDIN_POLL = None
 except ImportError:
     _HAS_TERMIOS = False
+    try:
+        import select
+        _STDIN_POLL = select.poll()
+        _STDIN_POLL.register(stdin, select.POLLIN)
+    except Exception:
+        _STDIN_POLL = None
 
 class raw(object):
     def __init__(self, stream):
@@ -1320,7 +1335,7 @@ def main(init=False,deinit=ONCRASH_OFF):
 
         # read character
         # TODO: can be spliced with HTTP or MQTT control if needed
-        cmd = stdin.read(1) if _HAS_TERMIOS else ''
+        cmd = stdin.read(1) if (_HAS_TERMIOS or (_STDIN_POLL is not None and _STDIN_POLL.poll(0))) else ''
         if cmd=='': continue
 
         # erase current realtime-data line

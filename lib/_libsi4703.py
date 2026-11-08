@@ -106,19 +106,48 @@ class si4703Radio():
     SI4703_SEEK_UP =        1
 
 
-    def __init__(self, addr=0x10, rstpin=23, irqpin=-1, bus=1, hwreset=False, initvolume=8, hw='raspi'):
+    def __init__(self, addr=0x10, rstpin=16, irqpin=-1, bus=1, hwreset=False, initvolume=8, hw='raspi', sda=None, scl=None, freq=100000):
         self.i2CAddr = addr
         self.resetPin = rstpin
         self.irqPIN = irqpin
         self.initvol=clamp(initvolume,0,15)
         self.hw=hw
         self.bus = bus
+        self.i2c_freq = freq
+        self._bus_id = bus if isinstance(bus, int) else None
+
+        if not isinstance(bus, int):
+            bus_str = str(bus)
+            if bus_str.startswith('I2C('):
+                try:
+                    parts = bus_str[4:-1].split(',')
+                    self._bus_id = int(parts[0].strip())
+                    for p in parts[1:]:
+                        k, v = p.strip().split('=')
+                        if k == 'sda' and sda is None:
+                            sda = int(v)
+                        elif k == 'scl' and scl is None:
+                            scl = int(v)
+                        elif k == 'freq' and freq == 100000:
+                            self.i2c_freq = int(v)
+                except Exception:
+                    pass
+
+        if sda is None or scl is None:
+            if self._bus_id == 0:
+                self.sdaPin = 4 if sda is None else sda
+                self.sclPin = 5 if scl is None else scl
+            else:
+                self.sdaPin = 2 if sda is None else sda
+                self.sclPin = 3 if scl is None else scl
+        else:
+            self.sdaPin = sda
+            self.sclPin = scl
 
         #setup the GPIO variables
-        self.i2c = I2C(bus) if isinstance(bus, int) else bus
-        if hw=='raspi':
+        if hw in ('raspi', 'pico') and self.resetPin >= 0:
           self._rst_pin = Pin(self.resetPin, Pin.OUT)
-          self._sdio_pin = Pin(0, Pin.OUT)
+        self._init_i2c()
 
         # Global shadow copy of the si4703 registers
         self.si4703_registers = [0] * 16
@@ -132,6 +161,24 @@ class si4703Radio():
 
         if hwreset: self.si4703hwreset(verb=True)
         #self.si4703ReadRegisters()
+
+
+    def _init_i2c(self):
+        sda_pin = Pin(self.sdaPin)
+        scl_pin = Pin(self.sclPin)
+        if isinstance(self.bus, int):
+            self.i2c = I2C(self.bus, scl=scl_pin, sda=sda_pin, freq=self.i2c_freq)
+        elif hasattr(self.bus, 'init'):
+            self.bus.init(scl=scl_pin, sda=sda_pin, freq=self.i2c_freq)
+            self.i2c = self.bus
+        elif self._bus_id is not None:
+            self.i2c = I2C(self._bus_id, scl=scl_pin, sda=sda_pin, freq=self.i2c_freq)
+            self.bus = self.i2c
+        else:
+            if hasattr(Pin, 'ALT') and hasattr(Pin, 'ALT_I2C'):
+                Pin(self.sdaPin, Pin.ALT, pull=Pin.PULL_UP, alt=Pin.ALT_I2C)
+                Pin(self.sclPin, Pin.ALT, pull=Pin.PULL_UP, alt=Pin.ALT_I2C)
+            self.i2c = self.bus
 
 
     def _wait_for_falling_edge(self, pin, timeout_ms):
@@ -150,6 +197,7 @@ class si4703Radio():
         # The breakout board has SEN pulled high, but also has SDIO pulled high. Therefore, after a normal power up
         # The Si4703 will be in an unknown state. RST must be controlled
         # Configure I2C and GPIO
+        self._sdio_pin = Pin(self.sdaPin, Pin.OUT)
         self._sdio_pin.value(0)
         time.sleep(0.05)
         if verb: print('hw RESET pulse (raspberry pi @'+str(self.resetPin)+'[BCM])')
@@ -157,11 +205,10 @@ class si4703Radio():
         time.sleep(0.1)
         self._rst_pin.value(1)
         time.sleep(0.05)
-        if isinstance(self.bus, int):
-            self.i2c = I2C(self.bus)
+        self._init_i2c()
 
     def si4703hwreset(self,*args,verb=True): # what hellish shenanigans are happening here? without *args was squealing about TypeError: got multiple values for argument verb
-        if   self.hw=='raspi': self.hwreset_raspi(verb=verb)
+        if   self.hw in ('raspi', 'pico'): self.hwreset_raspi(verb=verb)
         elif self.hw=='none': pass
         #else: print('ERROR: unknown hardware specified in si4703hwreset():',hw)
         else:
