@@ -1,3 +1,42 @@
 # CPython bytecode (created by py_compile on PC)
 __pycache__/
 *.pyc
+# ==========================================
+# MicroPython / Python Artifacts
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ==========================================
+# Sphinx Documentation
+# ==========================================
+# Ignore generated HTML/PDF, keep only source files (.rst, .md, .py)
+docs/_build/
+docs/build/
+
+# ==========================================
+# Dynamic Board Files (if copied to PC)
+# ==========================================
+presets.json
+error.log
+
+# ==========================================
+# IDE & Editor Settings
+# ==========================================
+.vscode/
+.idea/
+.thonny/
+
+# ==========================================
+# Virtual Environments
+# ==========================================
+venv/
+env/
+.venv/
+
+# ==========================================
+# OS System Files (Windows / Ubuntu)
+# ==========================================
+.DS_Store
+Thumbs.db
