@@ -1,0 +1,3 @@
+# CPython bytecode (created by py_compile on PC)
+__pycache__/
+*.pyc
