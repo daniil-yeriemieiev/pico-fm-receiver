@@ -1,3 +1,4 @@
+### Achievable key feature
 1. FM receiver - *88-108 MHz*
 2. Auto-scan function - internal RPI button
 3. OLED Display - show RDS, Freq., RSSI
@@ -6,8 +7,12 @@
 6. Modules: FM receiver, display, encoder(potenciometr), antenna
 7. RDS display - station/chanel name displayed on OLED screen
 
-TO-DO
+### TO-DO
 1. Block schemata
 2. Readme
 3. Work distribution
 4. Setting deadline
+
+### Temporary Schematic
+
+![temp_schematic](./docs/images/temp_schematic.jpg)
