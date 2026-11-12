@@ -15,7 +15,7 @@ from gpio_devices import Button
 # Hardware configuration constants
 PIN_CLK = 14
 PIN_DT = 15
-PIN_SW = 13
+PIN_SW = 16
 
 MIN_VAL = 0
 MAX_VAL = 10

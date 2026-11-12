@@ -7,10 +7,10 @@ Also records the longest non-blocking call (``poll``, ``seek_update``)."""
 import time
 from fm_tuner import FmTuner
 
-I2C_ID = 1
-PIN_SDA = 2
-PIN_SCL = 3
-PIN_RST = 16
+I2C_ID = 0
+PIN_SDA = 4
+PIN_SCL = 5
+PIN_RST = 12
 
 VOLUME = 5
 RDS_LISTEN_S = 20
@@ -207,5 +207,37 @@ def main():
         print("Interrupted")
     test.radio.power_off()
 
+
+    # # Test API 
+    # fm = FmTuner(I2C_ID, PIN_SDA, PIN_SCL, PIN_RST)
+    # try:
+    #     fm.start(volume=VOLUME, frequency=108.0)
+    #     # Seek up to the next station
+    #     fm.seek_start(up=True)
+    #     # Wait for the seek to complete
+    #     while not fm.seek_update():
+    #         time.sleep_ms(SEEK_POLL_MS)
+    #     # Print the tuned frequency and RSSI
+    #     print(f"Tuned to {fm.frequency:.1f} MHz with RSSI {fm.rssi} dBuV")
+    #     # Listen for RDS for a few seconds
+    #     print(f"Listening for RDS for {RDS_LISTEN_S} seconds...")
+    #     t0 = time.ticks_ms()
+    #     while True:
+    #         if time.ticks_diff(time.ticks_ms(), t0) > 20000:
+    #             t0 = time.ticks_ms()
+    #             fm.poll()
+    #             print(f"RDS groups: {fm.groups}, bad: {fm.bad_groups}, PI: {fm.pi}, PS: {fm.ps}", end="\r")
+    #             time.sleep_ms(POLL_MS)
+
+    # except OSError as e:
+    #     print(f"Error starting FM tuner: {e}")
+    #     fm.power_off()
+    #     return
+    # except Exception as e:
+    #     print(f"Unexpected error: {e}")
+    #     fm.power_off()
+    # except KeyboardInterrupt:
+    #     print("Interrupted during. FM power-off.")
+    #     fm.power_off()
 
 main()
