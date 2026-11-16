@@ -75,8 +75,8 @@ This project utilizes the following open-source drivers and libraries. We are gr
   - **License:** MIT License
 
 - **Si4703 FM Radio Tuner Driver**
-  - **Author:** Thomas Shaddack (`tshaddack`)
-  - **Files:** [`si4703rds.py`](https://github.com/tshaddack/si4703-RDS/blob/master/si4703rds.py), and internal dependencies ([`_libsi4703.py`](https://github.com/tshaddack/si4703-RDS/blob/master/_libsi4703.py), [`_rds_tmc_events.py`](https://github.com/tshaddack/si4703-RDS/blob/master/_rds_tmc_events.py), [`_rdslists.py`](https://github.com/tshaddack/si4703-RDS/blob/master/_rdslists.py))
-  - **Repository:** [si4703-RDS](https://github.com/tshaddack/si4703-RDS)
-  - **License:** MIT License
-  - **Modifications:** The original `_libsi4703.py` was written for Raspberry Pi (Linux). We removed `smbus` and `RPi.GPIO` dependencies and refactored the I2C communication to use MicroPython's native `machine.I2C` and `machine.Pin` classes for compatibility with the Pico W.
+  - **Author:** Maxim Sudakov
+  - **Files:** [`lib/fm_tuner.py`](/lib/fm_tuner.py)
+  - **Description:** A native MicroPython driver built from scratch for the Pico W, featuring non-blocking seek and RDS decoding. 
+  - **References:** Inspired by the Silicon Labs AN230 Programming Guide and the open-source [si4703-RDS](https://github.com/tshaddack/si4703-RDS) repository by Thomas Shaddack (`tshaddack`).
+  - **Modifications:** Replaced the previous direct port of the Linux-based `_libsi4703.py` with a completely rewritten custom module (`fm_tuner.py`) to fully utilize MicroPython's native `machine.I2C` and `time.ticks_ms` for optimal performance on the Pico W.
