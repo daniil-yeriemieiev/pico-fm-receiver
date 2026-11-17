@@ -43,7 +43,7 @@ Register map and start-up sequence follow Silicon Labs AN230. The 2-wire reset p
 6. Modules: FM receiver, display, encoder(potenciometr), antenna
 7. RDS display - station/chanel name displayed on OLED screen
 
-TO-DO
+### TO-DO
 1. Block schemata
 2. Readme
 3. Work distribution
