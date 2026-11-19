@@ -7,12 +7,12 @@ Change STATION_MHZ to a strong local station."""
 import time
 from fm_tuner import FmTuner
 
-I2C_ID = 0
-PIN_SDA = 4
-PIN_SCL = 5
-PIN_RST = 12
+I2C_ID = 1
+PIN_SDA = 26
+PIN_SCL = 27
+PIN_RST = 16
 
-STATION_MHZ = 98.4
+STATION_MHZ = 88.3
 VOLUME = 5
 LISTEN_S = 30
 POLL_MS = 30

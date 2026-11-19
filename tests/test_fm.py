@@ -7,10 +7,10 @@ Also records the longest non-blocking call (``poll``, ``seek_update``)."""
 import time
 from fm_tuner import FmTuner
 
-I2C_ID = 0
-PIN_SDA = 4
-PIN_SCL = 5
-PIN_RST = 12
+I2C_ID = 1
+PIN_SDA = 26
+PIN_SCL = 27
+PIN_RST = 16
 
 VOLUME = 5
 RDS_LISTEN_S = 20

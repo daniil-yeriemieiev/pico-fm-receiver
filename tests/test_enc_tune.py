@@ -11,14 +11,14 @@ from fm_tuner import FmTuner
 
 PIN_CLK = 14
 PIN_DT = 15
-I2C_ID = 0
-PIN_SDA = 4
-PIN_SCL = 5
-PIN_RST = 12
+I2C_ID = 1
+PIN_SDA = 26
+PIN_SCL = 27
+PIN_RST = 16
 
 MIN_VAL = 875  # encoder value = frequency in 100 kHz
 MAX_VAL = 1080
-START_MHZ = 98.4
+START_MHZ = 88.3
 VOLUME = 8
 
 LOOP_MS = 10
