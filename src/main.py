@@ -62,7 +62,7 @@ DEBOUNCE_MS = 25
 DOUBLE_CLICK_MS = 350      # Max interval between clicks for a double-click
 HOLD_THRESHOLD_MS = 400    # Hold time required to enter volume adjustment mode
 
-AUTOSCAN_RDS_WAIT_MS = 1800  # Max wait time per station to capture RDS during scan
+AUTOSCAN_RDS_WAIT_MS = 4700  # Max wait time per station to capture RDS during scan
 RDS_SCROLL_MS = 250          # Marquee scroll step interval in ms
 RDS_WINDOW_CHARS = 9         # Number of visible characters in zones 2.2-2.3
 
@@ -346,7 +346,7 @@ def main():
         min_val=FM_MIN_SCALED,
         max_val=FM_MAX_SCALED,
         incr=1,
-        reverse=False,
+        reverse=True,
         range_mode=RotaryIRQ.RANGE_WRAP,
         pull_up=True,
     )
