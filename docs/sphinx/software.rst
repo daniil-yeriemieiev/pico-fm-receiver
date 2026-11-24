@@ -4,27 +4,47 @@ Software
 Controls
 --------
 
-* **Rotate:** tune 88,0 to 108,0 MHz in 100 kHz steps (wraps at the edges).
-* **Single click:** seek to the next strong station (non-blocking).
-* **Double click:** start or stop the auto-scan. The found stations
-  (RSSI, frequency, RDS name) are printed as a table to the serial
-  terminal; afterwards the previous frequency is restored.
-* **Hold and rotate:** volume 0 to 15 (0 mutes).
+**Normal mode:**
+
+* **Rotate:** tune 88,0 to 108,0 MHz (100 kHz steps, wrap-around) or
+  adjust volume (0 to 15; 0 mutes). Rapid rotation defers the blocking
+  ``tune()`` call by 120 ms so no encoder steps are dropped.
+* **Single click:** toggle encoder control between frequency and volume.
+* **Press and hold:** seek to the next strong station (non-blocking).
+* **Double click:** open the Auto-Scan station menu.
+
+**Auto-Scan menu:**
+
+* **Single click:** start or stop a full-band auto-scan. Results are
+  written to a temporary session file (``autoscan_tmp.csv``), which is
+  deleted automatically when the program exits.
+* **Rotate:** scroll through discovered stations.
+* **Press and hold:** tune to the highlighted station and return to
+  normal mode.
+* **Double click:** exit back to normal mode (aborts an active scan).
 
 Modules
 -------
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 75
+   :widths: 28 72
 
    * - File
      - Purpose
    * - ``src/boot.py``
      - Holds the Si4703 in reset at power-up, enables garbage collection.
    * - ``src/main.py``
-     - Superloop, button gestures (:class:`main.MultiFunctionButton`),
-       OLED user interface (:class:`main.RadioUI`).
+     - Configuration constants, serial logging, and multi-rate superloop.
+   * - ``src/multi_button.py``
+     - Gesture recognition (:class:`multi_button.MultiFunctionButton`):
+       single click, double click, and hold.
+   * - ``src/radio_ui.py``
+     - OLED renderer (:class:`radio_ui.RadioUI`): 3x3 normal view and
+       scrollable Auto-Scan table.
+   * - ``src/station_store.py``
+     - Session-only CSV cache (:class:`station_store.StationStore`) for
+       auto-scan results.
    * - ``lib/fm_tuner.py``
      - Si4703 driver :class:`fm_tuner.FmTuner`: tune, seek, RSSI,
        RDS station name and RadioText.
@@ -36,12 +56,13 @@ Modules
 Timing plan
 -----------
 
-The program is one non-blocking loop (``LOOP_DELAY_MS`` = 20 ms) with a
-hardware interrupt for the encoder. ``asyncio`` is not used.
+The program uses a multi-rate non-blocking superloop
+(``LOOP_DELAY_MS`` = 5 ms) with a hardware interrupt for the encoder.
+``asyncio`` is not used.
 
 .. list-table::
    :header-rows: 1
-   :widths: 20 20 20 40
+   :widths: 20 18 20 42
 
    * - Activity
      - Mechanism
@@ -50,28 +71,31 @@ hardware interrupt for the encoder. ``asyncio`` is not used.
    * - Encoder rotation
      - IRQ
      - on event
-     - Sets the flag ``encoder_rotated``; no I2C call in the handler.
+     - Sets ``encoder_rotated``; no I2C call in the handler.
    * - Button
      - polling
-     - 20 ms
-     - Debounce 25 ms, double click window 350 ms, hold after 400 ms.
+     - 5 ms
+     - Debounce 15 ms, double click window 400 ms, hold after 600 ms.
+   * - Deferred tune
+     - settle timer
+     - 120 ms
+     - Calls ``radio.tune()`` once rapid rotation stops.
    * - Tuner and RDS
      - polling
-     - 20 ms
-     - ``radio.poll()``: RSSI, stereo, one RDS group (about 11,4 groups/s).
-   * - Seek and auto-scan
-     - state machine
-     - 20 ms
-     - ``radio.seek_update()``; up to 4700 ms per station for the RDS name.
+     - 30 ms
+     - ``radio.poll()`` / ``radio.seek_update()``; up to 4700 ms per
+       station for RDS PS during auto-scan.
    * - OLED
-     - polling
-     - 20 ms
+     - throttled poll
+     - 100 ms (50 ms min)
      - Redraws the framebuffer; the RadioText marquee moves every 250 ms.
 
 OLED layout
 -----------
 
-The 128x64 screen is divided into 3 rows and 3 columns (row.column).
+In normal mode, the 128x64 screen is divided into 3 rows and 3 columns
+(row.column). In Auto-Scan mode, the full screen displays a 5-row
+scrollable table (``RS | FREQ | RDS``) with an inverted highlight bar.
 
 .. list-table::
    :header-rows: 1
@@ -82,24 +106,25 @@ The 128x64 screen is divided into 3 rows and 3 columns (row.column).
      - Position (pixels) and notes
    * - 1.1
      - Signal strength
-     - Icon at x = 2, y = 4 (4 bars), RSSI value at x = 18, y = 6.
+     - Dynamic 0 to 4 bar icon at x = 2, y = 4; RSSI at x = 18, y = 6.
    * - 1.2 to 1.3
-     - RadioText
-     - x = 40, y = 6, 11 characters, scrolling. Shown after the whole
-       text was received. "SCANNING.." during the auto-scan.
+     - Station name
+     - x = 44, y = 6. RDS PS (up to 8 chars), "SEEKING.." or "NO RDS".
    * - 2.1
      - Frequency
-     - x = 0, y = 28, in MHz.
+     - x = 0, y = 28, in MHz; underlined (y = 37) in frequency mode.
    * - 2.2 to 2.3
-     - Station name
-     - x = 50, y = 28. RDS name (PS), "SEEKING.." or "NO RDS".
+     - RadioText
+     - x = 44, y = 28, 10 characters, scrolling (250 ms step). Shown
+       after the complete text is received.
    * - 3.1
      - Speaker icon
-     - x = 4, y = 48; crossed out when the volume is 0.
+     - Dynamic icon at x = 2, y = 48: crossed out at 0, 1 to 3 waves
+       scaling with volume.
    * - 3.2 to 3.3
      - Volume
-     - Bar at x = 50, y = 50 (48x8 pixels), value at x = 104, y = 50;
-       underlined while the button is held.
+     - Bar at x = 44, y = 50 (56x8 px), value at x = 106, y = 50;
+       underlined (y = 59) in volume mode.
 
 RDS decoding
 ------------

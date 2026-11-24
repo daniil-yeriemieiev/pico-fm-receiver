@@ -12,7 +12,27 @@ Si4703 tuner
 Application
 -----------
 
+.. automodule:: boot
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: main
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: multi_button
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: radio_ui
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. automodule:: station_store
    :members:
    :undoc-members:
    :show-inheritance:

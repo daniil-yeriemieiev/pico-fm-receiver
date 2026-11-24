@@ -1,6 +1,3 @@
-# CPython bytecode (created by py_compile on PC)
-__pycache__/
-*.pyc
 # ==========================================
 # MicroPython / Python Artifacts
 # ==========================================
@@ -15,6 +12,11 @@ __pycache__/
 docs/_build/
 docs/build/
 docs/sphinx/_build/
+
+# ==========================================
+# Temporary session file (if accidentally downloaded from Pico W)
+# ==========================================
+autoscan_tmp.csv
 
 # ==========================================
 # Dynamic Board Files (if copied to PC)
