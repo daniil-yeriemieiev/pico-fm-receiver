@@ -58,6 +58,11 @@ _ST = 0x0100
 _DEVICE_ID_SI470X = 0x1242
 _DEV_SI4703 = 9
 
+# RadioText (RDS group 2A / 2B)
+_RT_LEN = 64
+_RT_MAX_BLER = 1  # accept only error-free or lightly corrected blocks
+_CR = 0x0D  # end-of-text marker
+
 
 def _char(code):
     """Return printable ASCII character or question mark."""
@@ -180,6 +185,9 @@ class FmTuner:
         self._ps_mask = 0
         self._ps_candidate = None
         self._last_group = None
+        self.rt = ""
+        self._rt_ab = None
+        self._reset_rt_buffer()
         self._tuned_at = time.ticks_ms()
 
     # ---------- public API ----------
@@ -316,8 +324,8 @@ class FmTuner:
         return True
 
     def _decode_rds(self, group):
-        """Decode station name from one RDS group."""
-        a, b, _, d = group
+        """Decode station name and RadioText from one group."""
+        a, b, c, d = group
         s = self.reg[_STATUSRSSI]
         rc = self.reg[_READCHAN]
         bler = ((s >> 9) & 3, (rc >> 14) & 3, (rc >> 12) & 3, (rc >> 10) & 3)
@@ -328,8 +336,58 @@ class FmTuner:
             return  # group type unknown
         if bler[0] < 3:
             self.pi = a
-        if (b >> 12) != 0 or bler[3] == 3:
-            return  # not group 0A/0B
+        gtype = b >> 12
+        if gtype == 0:
+            self._decode_ps(b, d, bler)
+        elif gtype == 2:
+            self._decode_rt(b, c, d, bler)
+
+    def _reset_rt_buffer(self):
+        """Clear partly received RadioText characters."""
+        self._rt_buf = [" "] * _RT_LEN
+        self._rt_seen = [False] * _RT_LEN
+        self._rt_end = None  # position of end marker
+
+    def _publish_rt(self):
+        """Publish RadioText once every character was received."""
+        end = _RT_LEN
+        if self._rt_end is not None:
+            end = self._rt_end
+        for k in range(end):
+            if not self._rt_seen[k]:
+                return  # still incomplete
+        self.rt = "".join(self._rt_buf[:end]).strip()
+
+    def _decode_rt(self, b, c, d, bler):
+        """Collect RadioText characters from group 2A or 2B."""
+        if bler[3] > _RT_MAX_BLER:
+            return
+        seg = b & 0x0F
+        ab = bool(b & 0x0010)
+        if ab != self._rt_ab:  # A/B flag toggled: new text
+            self._rt_ab = ab
+            self._reset_rt_buffer()
+            self.rt = ""
+        if b & 0x0800:  # version B: two characters in block D
+            pos = 2 * seg
+            codes = (d >> 8, d & 0xFF)
+        else:  # version A: four characters in blocks C and D
+            if bler[2] > _RT_MAX_BLER:
+                return
+            pos = 4 * seg
+            codes = (c >> 8, c & 0xFF, d >> 8, d & 0xFF)
+        for i in range(len(codes)):
+            if codes[i] == _CR:  # text ends here
+                self._rt_end = pos + i
+                break
+            self._rt_buf[pos + i] = _char(codes[i])
+            self._rt_seen[pos + i] = True
+        self._publish_rt()
+
+    def _decode_ps(self, b, d, bler):
+        """Collect station name characters from group 0A or 0B."""
+        if bler[3] == 3:
+            return
         seg = b & 0x03
         self._ps_buf[2 * seg] = _char(d >> 8)
         self._ps_buf[2 * seg + 1] = _char(d & 0xFF)

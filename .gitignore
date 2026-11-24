@@ -14,6 +14,7 @@ __pycache__/
 # Ignore generated HTML/PDF, keep only source files (.rst, .md, .py)
 docs/_build/
 docs/build/
+docs/sphinx/_build/
 
 # ==========================================
 # Dynamic Board Files (if copied to PC)
