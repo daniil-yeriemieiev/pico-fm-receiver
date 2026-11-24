@@ -94,7 +94,7 @@ The Si4703 and SH1106 are placed on separate I2C buses to prevent the Si4703 2-w
 
 ### Block Diagram
 
-![Schematic](/docs/images/schematic.jpg)
+![Schematic](/docs/images/final.jpg)
 
 ### Timing and Concurrency Plan
 
