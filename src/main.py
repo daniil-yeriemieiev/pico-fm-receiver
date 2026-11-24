@@ -1,7 +1,21 @@
-"""Pico W FM radio: Si4703 tuner, SH1106 OLED and EC11 encoder.
+"""
+Main Application Module for the Pico W FM Radio Receiver (v1.1.0).
 
-Rotate to tune, click to seek, double click to auto-scan,
-hold and rotate to change the volume.
+Integrates the Si4703 FM tuner, SH1106 OLED display, EC11 rotary encoder,
+multi-function pushbutton, and temporary session storage using a multi-rate
+non-blocking superloop with hardware interrupts.
+
+Controls (Normal Mode):
+    - Rotate: Adjust frequency (88.0-108.0 MHz) or volume (0-15).
+    - Single click: Toggle encoder between frequency and volume mode.
+    - Press & hold: Hardware seek to the next strong station.
+    - Double click: Enter the Auto-Scan station menu.
+
+Controls (Auto-Scan Menu Mode):
+    - Single click: Start or stop band auto-scan.
+    - Rotate: Scroll through discovered stations.
+    - Press & hold: Tune to the selected station and exit to normal mode.
+    - Double click: Exit back to normal mode.
 """
 
 import time
@@ -10,7 +24,9 @@ from machine import Pin, I2C  # type: ignore
 from fm_tuner import FmTuner
 from sh1106 import SH1106_I2C
 from rotary_irq_rp2 import RotaryIRQ
-from gpio_devices import Button
+from multi_button import MultiFunctionButton
+from radio_ui import RadioUI
+from station_store import StationStore
 
 # Si4703 tuner (I2C1)
 RADIO_I2C_ID = 1
@@ -37,186 +53,94 @@ FM_MAX_SCALED = 1080
 DEFAULT_FREQ_SCALED = 883
 VOL_MIN = 0
 VOL_MAX = 15
-DEFAULT_VOLUME = 10
+DEFAULT_VOLUME = 5
 
-LOOP_DELAY_MS = 20
-DEBOUNCE_MS = 25
-DOUBLE_CLICK_MS = 350  # max gap between two clicks
-HOLD_THRESHOLD_MS = 400  # hold time for volume mode
+# Multi-rate superloop timings (ms)
+LOOP_DELAY_MS = 5
+RADIO_POLL_MS = 30
+UI_REFRESH_MS = 100
+UI_MIN_FRAME_MS = 50
+TUNE_SETTLE_MS = 120
 
-AUTOSCAN_RDS_WAIT_MS = 4700  # max RDS wait per station
-RT_SCROLL_MS = 250  # RadioText scroll step
-RT_WINDOW_CHARS = 11  # visible RadioText characters
-RT_X = 40  # RadioText window left edge
+# Button gesture timings (ms)
+DEBOUNCE_MS = 15
+DOUBLE_CLICK_MS = 400
+HOLD_THRESHOLD_MS = 600
+
+# RDS & Auto-Scan settings
+AUTOSCAN_RDS_WAIT_MS = 4700
+RT_SCROLL_MS = 250
+RT_WINDOW_CHARS = 10
+SESSION_FILE = "autoscan_tmp.csv"
 
 encoder_rotated = False  # set in IRQ, cleared in loop
 
 
 def on_encoder_change():
-    """Set a flag when the encoder rotates."""
+    """
+    Lightweight hardware interrupt callback for rotary encoder rotation.
+
+    Sets a global flag processed inside the main superloop without performing
+    any I2C transactions or memory allocation in IRQ context.
+    """
     global encoder_rotated
     encoder_rotated = True
 
 
-class MultiFunctionButton(Button):
-    """Button with single click, double click and hold detection."""
+def log(tag, message):
+    """
+    Print a timestamped log message to the serial terminal.
 
-    EVENT_NONE = 0
-    EVENT_SINGLE_CLICK = 1
-    EVENT_DOUBLE_CLICK = 2
-
-    def __init__(self, pin_number):
-        """Initialize button state for the given pin."""
-        super().__init__(pin_number)
-        self._last_raw = self.is_pressed()
-        self._stable_pressed = self._last_raw
-        self._last_debounce_ms = time.ticks_ms()
-        self._press_start_ms = 0
-        self._last_release_ms = 0
-        self._click_count = 0
-        self.is_holding = False
-
-    def update(self):
-        """Poll the button and return a click event.
-
-        Call once per loop. The hold state is in ``is_holding``.
-        """
-        now = time.ticks_ms()
-        raw_pressed = self.is_pressed()
-        event = self.EVENT_NONE
-
-        if raw_pressed != self._last_raw:
-            self._last_raw = raw_pressed
-            self._last_debounce_ms = now
-
-        if time.ticks_diff(now, self._last_debounce_ms) >= DEBOUNCE_MS:
-            if raw_pressed != self._stable_pressed:
-                self._stable_pressed = raw_pressed
-
-                if self._stable_pressed:
-                    self._press_start_ms = now
-                elif self.is_holding:
-                    self.is_holding = False
-                    self._click_count = 0
-                else:
-                    self._click_count += 1
-                    self._last_release_ms = now
-                    if self._click_count == 2:
-                        self._click_count = 0
-                        event = self.EVENT_DOUBLE_CLICK
-
-        # Enter hold state
-        if self._stable_pressed and not self.is_holding:
-            if time.ticks_diff(now, self._press_start_ms) >= HOLD_THRESHOLD_MS:
-                self.is_holding = True
-                self._click_count = 0
-
-        # Double-click window expired
-        if (self._click_count == 1 and not self._stable_pressed
-                and time.ticks_diff(now, self._last_release_ms) >= DOUBLE_CLICK_MS):
-            self._click_count = 0
-            event = self.EVENT_SINGLE_CLICK
-
-        return event
+    :param str tag: Short subsystem label (e.g. ``INIT``, ``TUNE``, ``SCAN``).
+    :param str message: Human-readable event description.
+    """
+    print(f"[{time.ticks_ms():>8} ms] [{tag}] {message}")
 
 
-class RadioUI:
-    """OLED user interface on a 3x3 zone grid."""
+def sync_encoder(encoder, value, min_val, max_val, range_mode):
+    """
+    Reconfigure the encoder range and clear any pending rotation flag.
 
-    def __init__(self, oled):
-        """Store the display and reset the marquee state."""
-        self.oled = oled
-        self._scroll_pos = 0
-        self._last_scroll_ms = time.ticks_ms()
-        self._last_rds_text = ""
+    :param RotaryIRQ encoder: Active rotary encoder instance.
+    :param int value: New encoder counter value.
+    :param int min_val: Lower range bound.
+    :param int max_val: Upper range bound.
+    :param int range_mode: ``RotaryIRQ.RANGE_WRAP`` or ``RANGE_BOUNDED``.
+    """
+    global encoder_rotated
+    encoder.set(value=value, min_val=min_val, max_val=max_val, range_mode=range_mode)
+    encoder_rotated = False
 
-    def _draw_rssi_icon(self, x, y, rssi):
-        """Draw a four-bar signal strength icon."""
-        # x, y, width, height, minimum RSSI
-        bars = [
-            (0, 8, 2, 3, 5),
-            (3, 6, 2, 5, 15),
-            (6, 3, 2, 8, 25),
-            (9, 0, 2, 11, 38),
-        ]
-        for bx, by, bw, bh, threshold in bars:
-            if rssi >= threshold:
-                self.oled.fill_rect(x + bx, y + by, bw, bh, 1)
-            else:
-                self.oled.rect(x + bx, y + by, bw, bh, 1)
 
-    def _draw_speaker_icon(self, x, y, muted):
-        """Draw a speaker icon, crossed out when muted."""
-        self.oled.fill_rect(x, y + 3, 3, 6, 1)
-        self.oled.vline(x + 3, y + 2, 8, 1)
-        self.oled.vline(x + 4, y + 1, 10, 1)
-        self.oled.vline(x + 5, y, 12, 1)
+def stop_active_seek(radio, timeout_ms=600):
+    """
+    Wait briefly for an in-progress hardware seek to clear before tuning.
 
-        if muted:
-            self.oled.line(x + 8, y + 3, x + 13, y + 8, 1)
-            self.oled.line(x + 8, y + 8, x + 13, y + 3, 1)
-        else:
-            self.oled.vline(x + 8, y + 3, 6, 1)
-            self.oled.vline(x + 11, y + 1, 10, 1)
+    Ensures the Si4703 internal seek state machine finishes cleanly so
+    subsequent :meth:`FmTuner.tune` calls are not ignored.
 
-    def _get_visible_rt(self, rt_text):
-        """Return the visible part of the scrolling RadioText."""
-        if rt_text != self._last_rds_text:
-            self._last_rds_text = rt_text
-            self._scroll_pos = 0
-            self._last_scroll_ms = time.ticks_ms()
-
-        if len(rt_text) <= RT_WINDOW_CHARS:
-            return rt_text
-
-        now = time.ticks_ms()
-        padded = rt_text + "   "
-        if time.ticks_diff(now, self._last_scroll_ms) >= RT_SCROLL_MS:
-            self._last_scroll_ms = now
-            self._scroll_pos = (self._scroll_pos + 1) % len(padded)
-
-        doubled = padded + padded
-        return doubled[self._scroll_pos:self._scroll_pos + RT_WINDOW_CHARS]
-
-    def render(self, radio, autoscan_active, holding_volume):
-        """Draw all display zones and refresh the screen."""
-        self.oled.fill(0)
-
-        # Row 1: signal strength and RadioText
-        self._draw_rssi_icon(2, 4, radio.rssi)
-        self.oled.text(f"{radio.rssi:>2}", 18, 6)
-        rt_raw = "SCANNING.." if autoscan_active else radio.rt
-        self.oled.text(self._get_visible_rt(rt_raw), RT_X, 6)
-
-        # Row 2: frequency and station name
-        self.oled.text(f"{radio.frequency:5.1f}", 0, 28)
-        if radio.seeking:
-            rds_raw = "SEEKING.."
-        elif radio.ps:
-            rds_raw = radio.ps
-        else:
-            rds_raw = "NO RDS"
-        self.oled.text(rds_raw, 50, 28)
-
-        # Row 3: speaker icon and volume
-        self._draw_speaker_icon(4, 48, muted=(radio.volume == 0))
-        bar_x, bar_y, bar_w, bar_h = 50, 50, 48, 8
-        self.oled.rect(bar_x, bar_y, bar_w, bar_h, 1)
-        fill_w = int((bar_w - 4) * radio.volume / VOL_MAX)
-        if fill_w > 0:
-            self.oled.fill_rect(bar_x + 2, bar_y + 2, fill_w, bar_h - 4, 1)
-        self.oled.text(f"{radio.volume:>2}", 104, 50)
-        if holding_volume:
-            self.oled.hline(104, 59, 16, 1)
-
-        self.oled.show()
+    :param FmTuner radio: Active FM tuner instance.
+    :param int timeout_ms: Maximum wait time in milliseconds.
+    """
+    t0 = time.ticks_ms()
+    while radio.seeking and time.ticks_diff(time.ticks_ms(), t0) < timeout_ms:
+        if radio.seek_update():
+            break
+        time.sleep_ms(10)
 
 
 def main():
-    """Run the radio application loop."""
+    """
+    Initialize hardware peripherals and execute the main radio superloop.
+    """
     global encoder_rotated
 
-    print("Initializing FM Radio Receiver...")
+    log("INIT", "Starting Pico W FM Radio Receiver (v1.1.0)...")
+
+    # Clean up any leftover temporary file from an ungraceful previous reset
+    store = StationStore(SESSION_FILE)
+    if store.cleanup():
+        log("STORE", f"Removed stale session file '{SESSION_FILE}'")
 
     radio = FmTuner(
         i2c_id=RADIO_I2C_ID,
@@ -226,7 +150,9 @@ def main():
         freq=RADIO_I2C_FREQ,
     )
     start_mhz = DEFAULT_FREQ_SCALED / 10.0
-    radio.start(volume=DEFAULT_VOLUME, frequency=start_mhz)
+    radio.start(volume=0, frequency=start_mhz)
+    radio.set_volume(DEFAULT_VOLUME)
+    log("INIT", f"Si4703 ready at {radio.frequency:.1f} MHz, volume {radio.volume}/{VOL_MAX}")
 
     if OLED_SHARED_I2C:
         oled_i2c = radio.i2c
@@ -238,7 +164,8 @@ def main():
             freq=OLED_I2C_FREQ,
         )
     oled = SH1106_I2C(oled_i2c)
-    ui = RadioUI(oled)
+    ui = RadioUI(oled, vol_max=VOL_MAX, rt_scroll_ms=RT_SCROLL_MS, rt_window_chars=RT_WINDOW_CHARS)
+    log("INIT", "SH1106 OLED initialized")
 
     encoder = RotaryIRQ(
         pin_num_clk=PIN_ENC_CLK,
@@ -250,146 +177,277 @@ def main():
         range_mode=RotaryIRQ.RANGE_WRAP,
         pull_up=True,
     )
-    encoder.set(value=DEFAULT_FREQ_SCALED)
+    sync_encoder(encoder, DEFAULT_FREQ_SCALED, FM_MIN_SCALED, FM_MAX_SCALED, RotaryIRQ.RANGE_WRAP)
     encoder.add_listener(on_encoder_change)
 
-    button = MultiFunctionButton(PIN_ENC_SW)
+    button = MultiFunctionButton(
+        PIN_ENC_SW,
+        debounce_ms=DEBOUNCE_MS,
+        double_click_ms=DOUBLE_CLICK_MS,
+        hold_threshold_ms=HOLD_THRESHOLD_MS,
+    )
+    log("INIT", "EC11 encoder and MultiFunctionButton ready")
 
-    was_holding = False
+    # Application state
+    control_mode = RadioUI.MODE_FREQ
+    in_scan_menu = False
     manual_seek_active = False
+    pending_freq_mhz = None
+    last_tune_input_ms = 0
 
-    autoscan_active = False
+    # Auto-scan state
     autoscan_stage = "IDLE"  # IDLE, SEEKING or WAIT_RDS
     autoscan_rds_t0 = 0
     autoscan_pre_freq = start_mhz
-    scanned_freqs = []
+    stations = []
+    selected_idx = 0
 
-    print(f"System ready. Tuned to {radio.frequency:.1f} MHz.")
+    # Periodic task timers and log deduplication
+    last_poll_ms = time.ticks_ms()
+    last_ui_ms = 0
+    ui_dirty = True
+    last_logged_ps = ""
+    last_logged_rt = ""
+
+    def apply_normal_encoder():
+        """Configure encoder bounds according to the active normal control mode."""
+        if control_mode == RadioUI.MODE_VOL:
+            sync_encoder(encoder, radio.volume, VOL_MIN, VOL_MAX, RotaryIRQ.RANGE_BOUNDED)
+        else:
+            freq_scaled = min(max(round(radio.frequency * 10), FM_MIN_SCALED), FM_MAX_SCALED)
+            sync_encoder(encoder, freq_scaled, FM_MIN_SCALED, FM_MAX_SCALED, RotaryIRQ.RANGE_WRAP)
+
+    def apply_menu_encoder():
+        """Configure encoder bounds for scrolling the auto-scan station list."""
+        max_idx = max(0, len(stations) - 1)
+        idx = min(max(selected_idx, 0), max_idx)
+        sync_encoder(encoder, idx, 0, max_idx, RotaryIRQ.RANGE_BOUNDED)
+
+    def flush_pending_tune():
+        """Execute any deferred frequency tune immediately."""
+        nonlocal pending_freq_mhz, last_logged_ps, last_logged_rt, ui_dirty
+        if pending_freq_mhz is not None:
+            target = pending_freq_mhz
+            pending_freq_mhz = None
+            tuned = radio.tune(target)
+            last_logged_ps = ""
+            last_logged_rt = ""
+            ui_dirty = True
+            if tuned is not None:
+                log("TUNE", f"{tuned:.1f} MHz | RSSI: {radio.rssi} | Stereo: {radio.stereo}")
+            else:
+                log("TUNE", f"Timeout tuning to {target:.1f} MHz")
 
     try:
         while True:
+            now = time.ticks_ms()
             btn_event = button.update()
 
-            # Switch encoder between frequency and volume
-            if button.is_holding and not was_holding:
-                was_holding = True
-                encoder_rotated = False
-                encoder.set(
-                    value=radio.volume,
-                    min_val=VOL_MIN,
-                    max_val=VOL_MAX,
-                    range_mode=RotaryIRQ.RANGE_BOUNDED,
-                )
-            elif not button.is_holding and was_holding:
-                was_holding = False
-                encoder_rotated = False
-                current_scaled = min(
-                    max(round(radio.frequency * 10), FM_MIN_SCALED),
-                    FM_MAX_SCALED,
-                )
-                encoder.set(
-                    value=current_scaled,
-                    min_val=FM_MIN_SCALED,
-                    max_val=FM_MAX_SCALED,
-                    range_mode=RotaryIRQ.RANGE_WRAP,
-                )
+            # ------------------------------------------------------------
+            # 1. BUTTON GESTURES
+            # ------------------------------------------------------------
+            if not in_scan_menu:
+                # Normal Mode: 1 click toggles FREQ / VOL
+                if btn_event == MultiFunctionButton.EVENT_SINGLE_CLICK:
+                    flush_pending_tune()
+                    control_mode = (
+                        RadioUI.MODE_VOL if control_mode == RadioUI.MODE_FREQ
+                        else RadioUI.MODE_FREQ
+                    )
+                    apply_normal_encoder()
+                    mode_name = "VOLUME" if control_mode == RadioUI.MODE_VOL else "FREQUENCY"
+                    log("MODE", f"Encoder switched to {mode_name}")
+                    ui_dirty = True
 
-            # Single click: seek next station
-            if btn_event == MultiFunctionButton.EVENT_SINGLE_CLICK:
-                if not autoscan_active and not radio.seeking:
-                    print("[SEEK] Searching for next strong station...")
-                    radio.seek_start(up=True)
-                    manual_seek_active = True
+                # Normal Mode: Hold triggers hardware seek
+                elif btn_event == MultiFunctionButton.EVENT_HOLD:
+                    flush_pending_tune()
+                    if not radio.seeking:
+                        log("SEEK", "Searching for next strong station...")
+                        radio.seek_start(up=True)
+                        manual_seek_active = True
+                        ui_dirty = True
 
-            # Double click: start or stop auto-scan
-            elif btn_event == MultiFunctionButton.EVENT_DOUBLE_CLICK:
-                autoscan_active = not autoscan_active
-                if autoscan_active:
-                    autoscan_pre_freq = radio.frequency
-                    scanned_freqs.clear()
-                    print("\nStarting Auto-Scan (88.0 - 108.0 MHz)...")
-                    print("+------+-------------+----------+")
-                    print("| RSSI |  Frequency  | RDS      |")
-                    print("+------+-------------+----------+")
-                    radio.tune(FM_MIN_SCALED / 10.0)
-                    radio.seek_start(up=True)
-                    autoscan_stage = "SEEKING"
-                else:
-                    print("+------+-------------+----------+")
-                    print("[AUTOSCAN] Stopped by user.")
-                    autoscan_stage = "IDLE"
-                    radio.tune(autoscan_pre_freq)
-                    encoder.set(value=round(radio.frequency * 10))
+                # Normal Mode: Double click enters Auto-Scan menu
+                elif btn_event == MultiFunctionButton.EVENT_DOUBLE_CLICK:
+                    flush_pending_tune()
+                    if manual_seek_active:
+                        stop_active_seek(radio)
+                        manual_seek_active = False
+                    in_scan_menu = True
+                    stations = store.load()
+                    selected_idx = min(selected_idx, max(0, len(stations) - 1))
+                    apply_menu_encoder()
+                    log("MODE", f"Entered Auto-Scan menu ({len(stations)} stations cached)")
+                    ui_dirty = True
 
-            # Encoder rotation
+            else:
+                # Auto-Scan Menu: Double click exits to Normal Mode
+                if btn_event == MultiFunctionButton.EVENT_DOUBLE_CLICK:
+                    if autoscan_stage != "IDLE":
+                        stop_active_seek(radio)
+                        autoscan_stage = "IDLE"
+                        radio.tune(autoscan_pre_freq)
+                        log("SCAN", "Aborted on menu exit; restored previous frequency")
+                    in_scan_menu = False
+                    apply_normal_encoder()
+                    log("MODE", "Exited Auto-Scan menu to Normal mode")
+                    ui_dirty = True
+
+                # Auto-Scan Menu: 1 click starts (or stops) Auto-Scan
+                elif btn_event == MultiFunctionButton.EVENT_SINGLE_CLICK:
+                    if autoscan_stage == "IDLE":
+                        autoscan_pre_freq = radio.frequency
+                        store.clear()
+                        stations = []
+                        selected_idx = 0
+                        log("STORE", f"Reset temporary file '{SESSION_FILE}'")
+                        log("SCAN", "Starting band auto-scan (88.0 - 108.0 MHz)...")
+                        radio.tune(FM_MIN_SCALED / 10.0)
+                        radio.seek_start(up=True)
+                        autoscan_stage = "SEEKING"
+                        ui_dirty = True
+                    else:
+                        stop_active_seek(radio)
+                        autoscan_stage = "IDLE"
+                        radio.tune(autoscan_pre_freq)
+                        stations = store.load()
+                        selected_idx = min(selected_idx, max(0, len(stations) - 1))
+                        apply_menu_encoder()
+                        log("SCAN", f"Stopped by user ({len(stations)} stations found)")
+                        ui_dirty = True
+
+                # Auto-Scan Menu: Hold tunes to selected station and exits
+                elif btn_event == MultiFunctionButton.EVENT_HOLD:
+                    if autoscan_stage == "IDLE" and stations:
+                        _, sel_freq, sel_rds = stations[selected_idx]
+                        in_scan_menu = False
+                        control_mode = RadioUI.MODE_FREQ
+                        radio.tune(sel_freq)
+                        last_logged_ps = ""
+                        last_logged_rt = ""
+                        apply_normal_encoder()
+                        log("SCAN", f"Selected {sel_freq:.1f} MHz ({sel_rds}), exiting menu")
+                        ui_dirty = True
+
+            # ------------------------------------------------------------
+            # 2. ENCODER ROTATION
+            # ------------------------------------------------------------
             if encoder_rotated:
                 encoder_rotated = False
                 val = encoder.value()
 
-                if button.is_holding:
+                if in_scan_menu:
+                    if autoscan_stage == "IDLE" and stations:
+                        selected_idx = min(max(val, 0), len(stations) - 1)
+                        ui_dirty = True
+                elif control_mode == RadioUI.MODE_VOL:
                     radio.set_volume(val)
                     radio.mute(val == 0)
-                elif not autoscan_active and not radio.seeking:
-                    radio.tune(val / 10.0)
+                    log("VOL", f"Volume set to {val}/{VOL_MAX}" + (" (MUTED)" if val == 0 else ""))
+                    ui_dirty = True
+                elif not radio.seeking:
+                    # Defer blocking tune until rapid rotation settles
+                    pending_freq_mhz = val / 10.0
+                    last_tune_input_ms = now
+                    ui_dirty = True
 
-            # Manual seek progress
-            if manual_seek_active:
-                if radio.seek_update():
-                    manual_seek_active = False
-                    if radio.seek_failed:
-                        print("[SEEK] No station found.")
-                    else:
-                        # Hardware wraps to 87.5 MHz
-                        if radio.frequency < (FM_MIN_SCALED / 10.0):
-                            radio.tune(FM_MIN_SCALED / 10.0)
-                        print(f"[SEEK] Tuned to {radio.frequency:.1f} MHz (RSSI: {radio.rssi})")
-                    encoder.set(value=round(radio.frequency * 10))
+            # Execute deferred tune once encoder stops moving
+            if (pending_freq_mhz is not None
+                    and time.ticks_diff(now, last_tune_input_ms) >= TUNE_SETTLE_MS):
+                flush_pending_tune()
 
-            # Auto-scan state machine
-            if autoscan_active:
-                if autoscan_stage == "SEEKING":
+            # ------------------------------------------------------------
+            # 3. RADIO POLLING, MANUAL SEEK & AUTO-SCAN FSM (every 30 ms)
+            # ------------------------------------------------------------
+            if time.ticks_diff(now, last_poll_ms) >= RADIO_POLL_MS:
+                last_poll_ms = now
+
+                if manual_seek_active:
+                    if radio.seek_update():
+                        manual_seek_active = False
+                        if radio.seek_failed:
+                            log("SEEK", "No station found")
+                        else:
+                            if radio.frequency < (FM_MIN_SCALED / 10.0):
+                                radio.tune(FM_MIN_SCALED / 10.0)
+                            log("SEEK", f"Found {radio.frequency:.1f} MHz (RSSI: {radio.rssi})")
+                        last_logged_ps = ""
+                        last_logged_rt = ""
+                        if not in_scan_menu and control_mode == RadioUI.MODE_FREQ:
+                            apply_normal_encoder()
+                        ui_dirty = True
+
+                elif autoscan_stage == "SEEKING":
                     if radio.seek_update():
                         freq = radio.frequency
-                        # Stop on failure or repeated station
-                        if radio.seek_failed or freq in scanned_freqs or freq < (FM_MIN_SCALED / 10.0):
-                            print("+------+-------------+----------+")
-                            print(f"[AUTOSCAN] Completed. Found {len(scanned_freqs)} stations.")
-                            autoscan_active = False
+                        duplicate = any(abs(s[1] - freq) < 0.05 for s in stations)
+                        if radio.seek_failed or duplicate or freq < (FM_MIN_SCALED / 10.0):
                             autoscan_stage = "IDLE"
                             radio.tune(autoscan_pre_freq)
-                            encoder.set(value=round(radio.frequency * 10))
+                            stations = store.load()
+                            selected_idx = 0
+                            apply_menu_encoder()
+                            log("SCAN", f"Completed. Found {len(stations)} stations.")
                         else:
-                            scanned_freqs.append(freq)
                             autoscan_stage = "WAIT_RDS"
-                            autoscan_rds_t0 = time.ticks_ms()
+                            autoscan_rds_t0 = now
+                        ui_dirty = True
 
                 elif autoscan_stage == "WAIT_RDS":
                     radio.poll()
-                    elapsed = time.ticks_diff(time.ticks_ms(), autoscan_rds_t0)
-                    # Log when PS is decoded or time is up
+                    elapsed = time.ticks_diff(now, autoscan_rds_t0)
                     if radio.ps or elapsed >= AUTOSCAN_RDS_WAIT_MS:
                         rds_str = radio.ps if radio.ps else "---"
-                        print(f"| {radio.rssi:>4} | {radio.frequency:>7.1f} MHz | {rds_str:<8} |")
+                        store.add(radio.rssi, radio.frequency, rds_str)
+                        stations.append((radio.rssi, radio.frequency, rds_str))
+                        selected_idx = len(stations) - 1
+                        log("SCAN", f"Station #{len(stations)}: {radio.frequency:5.1f} MHz | RSSI {radio.rssi:>2} | RDS: {rds_str}")
                         radio.seek_start(up=True)
                         autoscan_stage = "SEEKING"
-            else:
-                radio.poll()
+                        ui_dirty = True
 
-            ui.render(
-                radio=radio,
-                autoscan_active=autoscan_active,
-                holding_volume=button.is_holding,
-            )
+                else:
+                    radio.poll()
+                    if radio.ps and radio.ps != last_logged_ps:
+                        last_logged_ps = radio.ps
+                        log("RDS", f"PS: '{radio.ps}'")
+                        ui_dirty = True
+                    if radio.rt and radio.rt != last_logged_rt:
+                        last_logged_rt = radio.rt
+                        log("RDS", f"RT: '{radio.rt}'")
+                        ui_dirty = True
+
+            # ------------------------------------------------------------
+            # 4. THROTTLED OLED REFRESH
+            # ------------------------------------------------------------
+            since_ui = time.ticks_diff(now, last_ui_ms)
+            if since_ui >= UI_REFRESH_MS or (ui_dirty and since_ui >= UI_MIN_FRAME_MS):
+                last_ui_ms = now
+                ui_dirty = False
+                if in_scan_menu:
+                    ui.render_scan_menu(
+                        stations=stations,
+                        selected_idx=selected_idx,
+                        scanning=(autoscan_stage != "IDLE"),
+                        scan_freq=radio.frequency,
+                    )
+                else:
+                    disp_freq = pending_freq_mhz if pending_freq_mhz is not None else radio.frequency
+                    ui.render_normal(radio, disp_freq, control_mode)
 
             time.sleep_ms(LOOP_DELAY_MS)
 
     except KeyboardInterrupt:
-        print("\nShutting down...")
+        log("EXIT", "Shutdown requested by user")
+    finally:
         encoder.remove_listener(on_encoder_change)
         encoder.close()
         oled.poweroff()
         radio.power_off()
-        print("Hardware safely powered down.")
+        if store.cleanup():
+            log("STORE", f"Deleted temporary session file '{SESSION_FILE}'")
+        log("EXIT", "Hardware powered down cleanly")
 
 
 if __name__ == "__main__":
