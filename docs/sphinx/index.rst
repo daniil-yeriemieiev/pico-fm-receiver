@@ -10,6 +10,8 @@ and also the FM antenna.
 
 Project for the DE2 course, VUT FEKT, 2026.
 
+Source code: `GitHub repository <https://github.com/daniil-yeriemieiev/pico-fm-receiver>`_.
+
 Team
 ----
 
