@@ -60,12 +60,5 @@ autodoc_member_order = "bysource"
 autoclass_content = "both"
 
 exclude_patterns = ["_build"]
+templates_path = ["_templates"]
 html_theme = "sphinx_rtd_theme"
-
-html_context = {
-    "display_github": True,
-    "github_user": "daniil-yeriemieiev",
-    "github_repo": "pico-fm-receiver",
-    "github_version": "main",
-    "conf_py_path": "/docs/sphinx/",
-}
