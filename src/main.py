@@ -62,11 +62,6 @@ UI_REFRESH_MS = 100
 UI_MIN_FRAME_MS = 50
 TUNE_SETTLE_MS = 120
 
-# Button gesture timings (ms)
-DEBOUNCE_MS = 15
-DOUBLE_CLICK_MS = 400
-HOLD_THRESHOLD_MS = 600
-
 # RDS & Auto-Scan settings
 AUTOSCAN_RDS_WAIT_MS = 4700
 RT_SCROLL_MS = 250
@@ -110,23 +105,6 @@ def sync_encoder(encoder, value, min_val, max_val, range_mode):
     global encoder_rotated
     encoder.set(value=value, min_val=min_val, max_val=max_val, range_mode=range_mode)
     encoder_rotated = False
-
-
-def stop_active_seek(radio, timeout_ms=600):
-    """
-    Wait briefly for an in-progress hardware seek to clear before tuning.
-
-    Ensures the Si4703 internal seek state machine finishes cleanly so
-    subsequent :meth:`FmTuner.tune` calls are not ignored.
-
-    :param FmTuner radio: Active FM tuner instance.
-    :param int timeout_ms: Maximum wait time in milliseconds.
-    """
-    t0 = time.ticks_ms()
-    while radio.seeking and time.ticks_diff(time.ticks_ms(), t0) < timeout_ms:
-        if radio.seek_update():
-            break
-        time.sleep_ms(10)
 
 
 def main():
@@ -180,12 +158,8 @@ def main():
     sync_encoder(encoder, DEFAULT_FREQ_SCALED, FM_MIN_SCALED, FM_MAX_SCALED, RotaryIRQ.RANGE_WRAP)
     encoder.add_listener(on_encoder_change)
 
-    button = MultiFunctionButton(
-        PIN_ENC_SW,
-        debounce_ms=DEBOUNCE_MS,
-        double_click_ms=DOUBLE_CLICK_MS,
-        hold_threshold_ms=HOLD_THRESHOLD_MS,
-    )
+    # Pin base class rejects extra arguments
+    button = MultiFunctionButton(PIN_ENC_SW)
     log("INIT", "EC11 encoder and MultiFunctionButton ready")
 
     # Application state
@@ -272,7 +246,7 @@ def main():
                 elif btn_event == MultiFunctionButton.EVENT_DOUBLE_CLICK:
                     flush_pending_tune()
                     if manual_seek_active:
-                        stop_active_seek(radio)
+                        radio.seek_stop()
                         manual_seek_active = False
                     in_scan_menu = True
                     stations = store.load()
@@ -285,7 +259,7 @@ def main():
                 # Auto-Scan Menu: Double click exits to Normal Mode
                 if btn_event == MultiFunctionButton.EVENT_DOUBLE_CLICK:
                     if autoscan_stage != "IDLE":
-                        stop_active_seek(radio)
+                        radio.seek_stop()
                         autoscan_stage = "IDLE"
                         radio.tune(autoscan_pre_freq)
                         log("SCAN", "Aborted on menu exit; restored previous frequency")
@@ -308,7 +282,7 @@ def main():
                         autoscan_stage = "SEEKING"
                         ui_dirty = True
                     else:
-                        stop_active_seek(radio)
+                        radio.seek_stop()
                         autoscan_stage = "IDLE"
                         radio.tune(autoscan_pre_freq)
                         stations = store.load()

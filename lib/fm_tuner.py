@@ -284,12 +284,18 @@ class FmTuner:
         if not done and elapsed < self.SEEK_TIMEOUT_MS:
             return False
         self.seek_failed = (not done) or bool(self.reg[_STATUSRSSI] & _SFBL)
+        self.seek_stop()
+        return True
+
+    def seek_stop(self):
+        """End or abort the running seek."""
+        if not self.seeking:
+            return
         self.reg[_POWERCFG] &= _NOT_SEEK
         self._write(_POWERCFG)
         self._wait_stc(False, 50)
         self.seeking = False
         self._finish()
-        return True
 
     def seek(self, up=True):
         """Seek and wait until it finishes.
